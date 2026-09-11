@@ -1,0 +1,153 @@
+# Red Kite hub — Caddy.
+#
+# One host, one certificate, two paths kept firmly apart: the check-in endpoint that agents hit
+# every few minutes, and the management interface that humans use. Section 10.4 of the
+# specification requires them to be separate, with separate limits, and this file is where that
+# separation starts.
+#
+# ------------------------------------------------------------------------------------------------
+# BEFORE THE FIRST START: the DNS must already resolve.
+# ------------------------------------------------------------------------------------------------
+# Caddy asks Let's Encrypt for the certificate the moment it boots, and Let's Encrypt proves
+# ownership by connecting back to whatever HUB_HOSTNAME points at. If the A record is not in
+# place and propagated, the challenge fails, Caddy retries with a growing backoff, and the site
+# serves nothing. It reads like a broken deployment rather than a missing DNS record, so check
+# this first, always:
+#
+#     dig +short hub.example.com         # your own name; must return this server's address
+#
+# ------------------------------------------------------------------------------------------------
+# ON RATE LIMITING, WHICH IS THE PART PEOPLE GET WRONG
+# ------------------------------------------------------------------------------------------------
+# **Caddy has no built-in rate limiter.** There is a community module (caddy-ratelimit) but it
+# needs a custom binary built with xcaddy, and a hand-built proxy that nobody remembers how to
+# rebuild is its own kind of outage.
+#
+# That is acceptable, because the rate limit that actually matters here **cannot live in Caddy
+# anyway**. The check-in limit is per machine token: one agent may send every 60 seconds, and a
+# hundred agents behind one customer's single office IP address are a hundred separate quotas.
+# Caddy sees an IP address; only the API sees the token. So:
+#
+#   * per-token check-in limits          -> enforced in the API (phase 9, §12)
+#   * failed-authentication throttling    -> enforced in the API, which knows what failed
+#   * login and management rate limits    -> enforced in the API, per account
+#   * crude connection and body limits    -> here, below, because they cost nothing
+#
+# What this file does contribute is a hard ceiling on request body size, separately for each path,
+# so a malformed or hostile agent cannot post a hundred megabytes at the check-in endpoint and
+# make the hub everybody else depends on run out of memory.
+{
+	# Where Let's Encrypt sends expiry warnings. Set ACME_EMAIL in deploy/.env and read a message
+	# from them as an emergency, not as marketing.
+	email {$ACME_EMAIL}
+
+	# Uncomment to use the Let's Encrypt staging endpoint while fiddling with DNS. Staging issues
+	# untrusted certificates but has generous rate limits; the live endpoint allows only five
+	# duplicate certificates a week, and burning that leaves the hub unreachable to every agent
+	# for days.
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# The hostname comes from the environment (HUB_HOSTNAME in .env). There is deliberately no default:
+# an unset hostname must stop the deployment with a plain sentence rather than quietly ask Let's
+# Encrypt for a certificate on a domain somebody else owns.
+{$HUB_HOSTNAME} {
+	encode zstd gzip
+
+	# ------------------------------------------------------------------------------------------
+	# Access log, to a mounted volume so it survives the container.
+	# ------------------------------------------------------------------------------------------
+	# JSON because it is meant to be queried after an incident, not read like prose. Rolled by
+	# size: a monitoring hub with eighty agents checking in every five minutes writes a lot of
+	# lines, and a full disk on the machine that is supposed to notice things is the worst
+	# possible failure.
+	log {
+		output file /var/log/caddy/hub-access.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+	}
+
+	# ------------------------------------------------------------------------------------------
+	# Security headers
+	# ------------------------------------------------------------------------------------------
+	header {
+		# A year of HSTS. Only ever served over HTTPS anyway, but this stops the first request of
+		# a session being plaintext.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		# Do not advertise what is running here. It saves nobody anything to tell a scanner.
+		-Server
+	}
+
+	# ------------------------------------------------------------------------------------------
+	# The check-in endpoint. Machines only.
+	# ------------------------------------------------------------------------------------------
+	# This is the path that must never be down: it is where an agent says "I am still here".
+	# Nothing that could break it belongs in this block.
+	@checkin path /api/v1/check-in*
+	handle @checkin {
+		# A check-in is figures, never content (§10.3) — a few hundred bytes of disk, load,
+		# service states and certificate ages. 32KB is many times more than any honest agent
+		# sends, and small enough that a flood of them cannot exhaust memory.
+		request_body {
+			max_size 32KB
+		}
+
+		reverse_proxy api:8080 {
+			# The API needs the real client address, not the container network's, so that its own
+			# per-token limits and its audit trail record where a check-in actually came from.
+			header_up X-Real-IP {remote_host}
+
+			# Short timeouts. An agent posts a small body and leaves; anything holding a
+			# connection open longer than this is not an agent doing its job.
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 15s
+			}
+		}
+	}
+
+	# ------------------------------------------------------------------------------------------
+	# The health endpoint, unlogged.
+	# ------------------------------------------------------------------------------------------
+	# Docker and the external dead-man's switch both poll this. Logging it would bury the lines
+	# that matter under thousands that do not.
+	handle /health {
+		log_skip
+		reverse_proxy api:8080
+	}
+
+	# ------------------------------------------------------------------------------------------
+	# Everything else: the management interface and the rest of the API. Humans only.
+	# ------------------------------------------------------------------------------------------
+	# Separate path, separate limits, separate blast radius. A management request may legitimately
+	# be larger (a customer import, a screenshot on a note) and may legitimately take longer, but
+	# a burst of them must never be able to starve the check-in path above.
+	handle {
+		request_body {
+			max_size 2MB
+		}
+
+		reverse_proxy api:8080 {
+			header_up X-Real-IP {remote_host}
+
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+			}
+		}
+	}
+
+	# What a person sees when the hub itself is down. Plain English, and it says what to do —
+	# the same rule the interface follows.
+	handle_errors {
+		respond "The Red Kite hub is not answering. Nothing has been lost: agents keep sending, and check-ins resume as soon as it is back. If this persists, the hub needs looking at on the server. ({err.status_code})" {err.status_code}
+	}
+}
+

@@ -1,0 +1,179 @@
+# Red Kite — your own hub.
+#
+# Three containers: the hub, PostgreSQL, and Caddy in front holding the certificate.
+#
+#     cp .env.example .env      # then fill it in. It is never committed anywhere
+#     nano .env
+#     docker compose up -d
+#
+# **Point your hostname at this machine before the first start.** Caddy asks Let's Encrypt for the
+# certificate the moment it boots, and the challenge fails if the record is not already resolving.
+# It looks like a broken deployment rather than a missing DNS record, and people lose an evening
+# to it:
+#
+#     dig +short hub.example.com      # must return this server's address
+#
+# THE HUB MUST NOT LIVE IN THE BUILDING IT WATCHES. If the hub shares its power, its switch or its
+# broadband with the machines it is watching, then the one event you most need to hear about is the
+# one event that takes the hub down too. A £5 VPS anywhere else is the whole requirement.
+#
+# Nothing here ever connects to a monitored machine, and nothing here ever will. Agents reach the
+# hub; the hub does not reach agents. That is the entire design, and it is why no port forwarding,
+# VPN or static address is needed at the sites you are watching.
+
+name: redkite
+
+services:
+  # ---------------------------------------------------------------------------------------------
+  # The hub. Answers the check-in endpoint, runs the sweep, serves the screens.
+  # ---------------------------------------------------------------------------------------------
+  hub:
+    # Pulled, not built. The source is not public; the image is.
+    # Pin a version instead of :latest once you are running it in earnest — then an update is
+    # something you choose rather than something that arrives.
+    image: ghcr.io/redkite-info/redkite-hub:${REDKITE_VERSION:-latest}
+    container_name: redkite-hub
+    restart: unless-stopped
+
+    depends_on:
+      db:
+        # Not just "started". Postgres listens on TCP a second or two before it will answer a
+        # query, and migrations run in that window fail in a way that reads like a broken
+        # migration rather than a race.
+        condition: service_healthy
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+
+      # .NET configuration through environment variables: double underscore is section nesting.
+      ConnectionStrings__Default: "Host=db;Port=5432;Database=${POSTGRES_DB:-redkite};Username=${POSTGRES_USER:-redkite};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env. Generate one using openssl rand -base64 32}"
+
+      # So links in alert emails point somewhere a person can actually click.
+      RedKite__PublicBaseUrl: "https://${HUB_HOSTNAME:?Set HUB_HOSTNAME in .env to the name this hub answers to, for example hub.example.com}"
+
+      # ---- Alerting. Every one of these is optional, and the hub says loudly on its own health
+      # screen when it cannot send rather than failing quietly. Start with none of them, confirm a
+      # machine is checking in, then add a channel.
+      Alerting__EmailProvider: ${EMAIL_PROVIDER:-}
+      Alerting__EmailFrom: ${ALERT_FROM_ADDRESS:-}
+      Alerting__PostmarkServerToken: ${EMAIL_API_KEY:-}
+      Alerting__SmtpHost: ${SMTP_HOST:-}
+      Alerting__SmtpPort: ${SMTP_PORT:-}
+      Alerting__SmtpUsername: ${SMTP_USERNAME:-}
+      Alerting__SmtpPassword: ${SMTP_PASSWORD:-}
+      Alerting__TwilioAccountSid: ${TWILIO_ACCOUNT_SID:-}
+      Alerting__TwilioAuthToken: ${TWILIO_AUTH_TOKEN:-}
+      Alerting__TwilioFromNumber: ${TWILIO_FROM_NUMBER:-}
+      Alerting__PushoverApplicationToken: ${PUSHOVER_APPLICATION_TOKEN:-}
+
+      # Who watches the watcher. The hub pings this on a timer; if the hub dies, the outside
+      # service notices the silence and tells you — because a monitor cannot report its own
+      # absence, which is the exact gap this product exists to close.
+      #
+      # **Please do not leave this blank.** Healthchecks.io's free tier is enough, and a hub
+      # nobody is watching is the one failure this whole design cannot cover for you.
+      Alerting__HealthchecksPingUrl: ${HEALTHCHECKS_PING_URL:-}
+
+      # Used only on the very first start, to create the first account and the first organisation.
+      # Both are read once, into an empty database, and ignored ever afterwards. See the README.
+      REDKITE_SEED_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env. It becomes your sign-in account}
+      REDKITE_SEED_ORG: ${ORGANISATION_NAME:-My organisation}
+
+    expose:
+      # Visible to Caddy on the compose network and to nothing else. There is no `ports:` here on
+      # purpose: the hub is never reachable except through Caddy, which holds the TLS.
+      - "8080"
+
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+    logging:
+      # A small VPS has a small disk, and Docker's default driver grows without limit until the
+      # disk is full and everything stops at once.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------------------------
+  # PostgreSQL 17. Your customers, machines, hashed tokens, check-ins and incidents.
+  # ---------------------------------------------------------------------------------------------
+  db:
+    image: postgres:17-alpine
+    container_name: redkite-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-redkite}
+      POSTGRES_USER: ${POSTGRES_USER:-redkite}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env. Generate one using openssl rand -base64 32}"
+
+    # **No `ports:` block, and there must never be one.** Only the hub container needs to reach
+    # this, over the compose network. Publishing 5432 on a public VPS puts your machine list and
+    # your hashed tokens one weak password away from the whole internet.
+
+    volumes:
+      - redkite_db_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-redkite} -d ${POSTGRES_DB:-redkite}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------------------------
+  # Caddy. A real Let's Encrypt certificate, security headers, and the two paths kept apart.
+  # ---------------------------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    container_name: redkite-caddy
+    restart: unless-stopped
+
+    depends_on:
+      - hub
+
+    ports:
+      # 80 is not optional even though everything real is on 443: the ACME challenge uses it, and
+      # the redirect to HTTPS lives there.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+    environment:
+      HUB_HOSTNAME: ${HUB_HOSTNAME:?Set HUB_HOSTNAME in .env to the name this hub answers to}
+      # Where Let's Encrypt sends expiry and problem notices. A mailbox somebody reads.
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env to a mailbox you read. Certificate expiry warnings go there}
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # /data holds the certificates and the ACME account key. **Without this volume every restart
+      # asks Let's Encrypt for a fresh certificate**, and their limit of five duplicates a week
+      # will eventually leave the hub with no certificate at all — which means agents cannot check
+      # in, which means everything looks dead.
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  redkite_db_data:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

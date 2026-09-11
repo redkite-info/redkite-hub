@@ -1,0 +1,2 @@
+# Never commit the real one. It holds the database password and your alerting credentials.
+.env
