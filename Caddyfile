@@ -41,6 +41,12 @@
 	# from them as an emergency, not as marketing.
 	email {$ACME_EMAIL}
 
+	# A client connecting to a bare IP address cannot send SNI - the TLS specification forbids an IP
+	# literal there - so Caddy gets a handshake with no server name, matches it to no site, and
+	# aborts with "internal error". The certificate is fine; it is never reached. This names the
+	# site to fall back to, and it is what the Easy2pc Caddyfile has always done.
+	default_sni {$HUB_HOSTNAME}
+
 	# Uncomment to use the Let's Encrypt staging endpoint while fiddling with DNS. Staging issues
 	# untrusted certificates but has generous rate limits; the live endpoint allows only five
 	# duplicate certificates a week, and burning that leaves the hub unreachable to every agent
@@ -150,4 +156,3 @@
 		respond "The Red Kite hub is not answering. Nothing has been lost: agents keep sending, and check-ins resume as soon as it is back. If this persists, the hub needs looking at on the server. ({err.status_code})" {err.status_code}
 	}
 }
-
