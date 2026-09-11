@@ -99,7 +99,7 @@
 			max_size 32KB
 		}
 
-		reverse_proxy api:8080 {
+		reverse_proxy hub:8080 {
 			# The API needs the real client address, not the container network's, so that its own
 			# per-token limits and its audit trail record where a check-in actually came from.
 			header_up X-Real-IP {remote_host}
@@ -120,7 +120,7 @@
 	# that matter under thousands that do not.
 	handle /health {
 		log_skip
-		reverse_proxy api:8080
+		reverse_proxy hub:8080
 	}
 
 	# ------------------------------------------------------------------------------------------
@@ -134,7 +134,7 @@
 			max_size 2MB
 		}
 
-		reverse_proxy api:8080 {
+		reverse_proxy hub:8080 {
 			header_up X-Real-IP {remote_host}
 
 			transport http {
