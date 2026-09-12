@@ -14,6 +14,6 @@
 # The installer carries the other two checksums inside itself and refuses a file that does not
 # match, which catches a stale CDN copy or a partial compromise. It cannot catch a replaced
 # installer. That is what the line above is for.
-5afcb5727c931d1348d6cd4aaa5cf7c5f96a0fe9e155b0f0e124a7d08c1c46c9  hub.sh
+0c15f6a2f2da35eefe42cd711fb4485e9ee1e98f90774e3583e8c8fd8cebaca4  hub.sh
 8cd848d6348d5daee301af35cfb68c032b3274f59969c51fac03c738d7a9d1e6  docker-compose.yml
 ad8b22473e7f8817fc6623e80e203b1b9b9e27d4401037a814a11ff9fce68ef3  Caddyfile

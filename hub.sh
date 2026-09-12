@@ -749,6 +749,36 @@ start_hub() {
     rm -f "$pull_log"
     ok "images downloaded"
 
+    # -----------------------------------------------------------------------------------------
+    # The schema goes in BEFORE anything starts serving.
+    # -----------------------------------------------------------------------------------------
+    # This used to happen as part of seeding, which runs after `up -d` - so on every single fresh
+    # install the hub served for the better part of a minute against an empty database. The sweep
+    # begins five seconds after boot, found no tables, and the first thing a new customer saw on
+    # the hub screen was:
+    #
+    #     The last sweep failed: 42P01: relation "checks" does not exist POSITION: 672
+    #
+    # It recovered on the next tick and nothing was wrong. But it is a raw Postgres error on the
+    # first screen somebody ever sees, on a product whose whole promise is saying plainly what it
+    # knows - and "the sweep has not reported yet" is, for that minute, perfectly true and quite
+    # alarming. Migrating first costs a few seconds and removes the whole episode.
+    #
+    # Seeding still migrates as well. It is idempotent, and a second opinion costs nothing.
+    printf '   preparing the database'
+    if docker compose run --rm hub --migrate >"$DIR/.migrate.log" 2>&1; then
+        printf '\n'
+        ok "the schema is ready"
+        rm -f "$DIR/.migrate.log"
+    else
+        printf '\n'
+        # Not fatal. Seeding will try again, and the sweep survives a schema that arrives late -
+        # it did before this step existed. Saying so is better than stopping a working install.
+        note "The database was not prepared ahead of time; seeding will do it instead."
+        tail -4 "$DIR/.migrate.log" 2>/dev/null | sed 's/^/         /'
+        rm -f "$DIR/.migrate.log"
+    fi
+
     if ! docker compose up -d 2>&1 | sed 's/^/   /'; then
         fail "The images are here but the containers did not start."
         say  ""
