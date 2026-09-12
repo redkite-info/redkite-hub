@@ -1,4 +1,4 @@
-# Red Kite hub — Caddy.
+# Red Kite hub. Caddy.
 #
 # One host, one certificate, two paths kept firmly apart: the check-in endpoint that agents hit
 # every few minutes, and the management interface that humans use. Section 10.4 of the
@@ -98,7 +98,7 @@
 	# Nothing that could break it belongs in this block.
 	@checkin path /api/v1/check-in*
 	handle @checkin {
-		# A check-in is figures, never content (§10.3) — a few hundred bytes of disk, load,
+		# A check-in is figures, never content (§10.3), a few hundred bytes of disk, load,
 		# service states and certificate ages. 32KB is many times more than any honest agent
 		# sends, and small enough that a flood of them cannot exhaust memory.
 		request_body {
@@ -150,7 +150,7 @@
 		}
 	}
 
-	# What a person sees when the hub itself is down. Plain English, and it says what to do —
+	# What a person sees when the hub itself is down. Plain English, and it says what to do
 	# the same rule the interface follows.
 	handle_errors {
 		respond "The Red Kite hub is not answering. Nothing has been lost: agents keep sending, and check-ins resume as soon as it is back. If this persists, the hub needs looking at on the server. ({err.status_code})" {err.status_code}

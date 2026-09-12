@@ -64,6 +64,34 @@ cd redkite-hub
 
 ---
 
+## Verifying the installer, if you used it
+
+Most people stand a hub up with the one-line installer rather than by hand:
+
+```bash
+curl -sSL https://redkite.info/hub.sh -o rk-hub.sh
+sudo bash rk-hub.sh
+```
+
+That script is fetched from **redkite.info**, and it runs as root. This repository is the place to
+check it against, because **it is not the machine that serves redkite.info** — somebody who gets
+into that server cannot change what is here as well.
+
+```bash
+sha256sum rk-hub.sh
+```
+
+Compare the result with the `hub.sh` line in [SHA256SUMS](SHA256SUMS). The copy of `hub.sh` in this
+repository is the same file, so you can also read it before you run it.
+
+The installer carries the checksums of `docker-compose.yml` and `Caddyfile` inside itself and
+refuses to write either if it does not match — that catches a stale CDN copy, or a change made to
+the site alone. **It cannot catch a replaced installer**, because a poisoned one would carry
+poisoned checksums. The comparison above is the only check that survives that, which is why it is
+worth the ten seconds.
+
+---
+
 ## 3 · Fill in the settings
 
 ```bash

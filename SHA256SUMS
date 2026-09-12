@@ -1,0 +1,15 @@
+# Red Kite - what the published installer and its two files should be.
+#
+# Checked by hand, before running the installer as root:
+#
+#     sha256sum rk-hub.sh
+#
+# and compared with the hub.sh line below. This copy lives on GitHub, which is NOT the machine
+# that serves redkite.info - so somebody who gets into that machine cannot change both.
+#
+# The installer carries the other two checksums inside itself and refuses a file that does not
+# match, which catches a stale CDN copy or a partial compromise. It cannot catch a replaced
+# installer. That is what the line above is for.
+3f3c265671f85be239368f04ab318611d9e12910fd3a9d6334e8fdfcca16a2a4  hub.sh
+8cd848d6348d5daee301af35cfb68c032b3274f59969c51fac03c738d7a9d1e6  docker-compose.yml
+ad8b22473e7f8817fc6623e80e203b1b9b9e27d4401037a814a11ff9fce68ef3  Caddyfile

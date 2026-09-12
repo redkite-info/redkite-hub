@@ -1,4 +1,4 @@
-# Red Kite — your own hub.
+# Red Kite: your own hub.
 #
 # Three containers: the hub, PostgreSQL, and Caddy in front holding the certificate.
 #
@@ -29,7 +29,7 @@ services:
   # ---------------------------------------------------------------------------------------------
   hub:
     # Pulled, not built. The source is not public; the image is.
-    # Pin a version instead of :latest once you are running it in earnest — then an update is
+    # Pin a version instead of :latest once you are running it in earnest: then an update is
     # something you choose rather than something that arrives.
     image: ghcr.io/redkite-info/redkite-hub:${REDKITE_VERSION:-latest}
     container_name: redkite-hub
@@ -68,7 +68,7 @@ services:
       Alerting__PushoverApplicationToken: ${PUSHOVER_APPLICATION_TOKEN:-}
 
       # Who watches the watcher. The hub pings this on a timer; if the hub dies, the outside
-      # service notices the silence and tells you — because a monitor cannot report its own
+      # service notices the silence and tells you, because a monitor cannot report its own
       # absence, which is the exact gap this product exists to close.
       #
       # **Please do not leave this blank.** Healthchecks.io's free tier is enough, and a hub
@@ -79,6 +79,24 @@ services:
       # Both are read once, into an empty database, and ignored ever afterwards. See the README.
       REDKITE_SEED_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env. It becomes your sign-in account}
       REDKITE_SEED_ORG: ${ORGANISATION_NAME:-My organisation}
+
+    volumes:
+      # ------------------------------------------------------------------------------------
+      # A read-only view of the machine this hub is running on.
+      # ------------------------------------------------------------------------------------
+      # These let the hub screen report the server as well as the program: its real memory, its
+      # processor, its filesystems, its network, and whether the mirror underneath it is still a
+      # mirror. Without them a container can only measure its own sandbox, so where they are
+      # missing the hub says exactly that on screen and reports nothing, rather than showing the
+      # container's figures under the machine's name.
+      #
+      # Read-only, all three. Nothing here reaches any other machine.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+
+      # Only so free space can be measured for filesystems that are not otherwise visible in here.
+      # `rslave` so later mounts on the host are seen and nothing can propagate back the other way.
+      - /:/host/root:ro,rslave
 
     expose:
       # Visible to Caddy on the compose network and to nothing else. There is no `ports:` here on
@@ -160,7 +178,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # /data holds the certificates and the ACME account key. **Without this volume every restart
       # asks Let's Encrypt for a fresh certificate**, and their limit of five duplicates a week
-      # will eventually leave the hub with no certificate at all — which means agents cannot check
+      # will eventually leave the hub with no certificate at all, which means agents cannot check
       # in, which means everything looks dead.
       - caddy_data:/data
       - caddy_config:/config
