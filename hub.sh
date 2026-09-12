@@ -49,7 +49,12 @@
 #
 # It fetches a compose file and a Caddy configuration, both public and both readable before you
 # run this, at github.com/redkite-info/redkite-hub. It writes them, an .env, and nothing else.
-# It installs no agent and opens no inbound path to any machine you own.
+#
+# **It installs the agent on this one server, and on no other.** The hub is a server too, and the
+# most obvious machine to watch is the one it is running on - so it adds itself as the first
+# machine and installs smartmontools so its disks can actually be read. Nothing is installed
+# anywhere else, and no inbound path is opened to any machine you own: the agent reports outwards,
+# like every other agent. `--skip-self` leaves this server alone.
 #
 # Options, for an unattended install. With all four of --hostname, --email, --org and --yes it
 # never asks anything:
@@ -60,6 +65,7 @@
 #   --dir PATH         where to install                     (default /opt/redkite)
 #   --skip-dns-check   do not verify the name points here   (you had better be sure)
 #   --yes              do not ask to confirm anything
+#   --skip-self        do not add this server as the first machine it watches
 #   --uninstall        stop the hub and remove the containers
 
 set -uo pipefail
@@ -120,6 +126,7 @@ ASSUME_YES=0
 SKIP_DNS=0
 UNINSTALL=0
 IP_MODE=0
+SKIP_SELF=0
 
 # ---------------------------------------------------------------------------------------------
 # Saying things
@@ -161,6 +168,7 @@ while [[ $# -gt 0 ]]; do
         --skip-dns-check) SKIP_DNS=1;          shift ;;
         --yes|-y)         ASSUME_YES=1;        shift ;;
         --uninstall)      UNINSTALL=1;         shift ;;
+        --skip-self)      SKIP_SELF=1;         shift ;;
         -h|--help)        sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)                die "I do not know the option $1. Run with --help." ;;
     esac
@@ -781,6 +789,147 @@ start_hub() {
 # run says there is already a customer here and changes nothing, rather than quietly reissuing a
 # token and breaking the agents using the old one.
 # ---------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------
+# The hub is a server too, so it is the first thing watched
+# ---------------------------------------------------------------------------------------------
+# A fresh hub used to finish with an empty Now screen and an instruction to go and find a machine.
+# The most obvious machine in the world was the one it had just been installed on, and leaving it
+# out taught people that the first screen they ever see is empty.
+#
+# **What this does and does not buy, because the distinction matters.** The hub watching itself
+# catches *unwell* - a filling disk, a mirror running on one leg, memory going, a filesystem gone
+# read-only - and those are real and worth having. It cannot catch *absent*: if this server dies,
+# its agent stops checking in and the sweep that would notice is dead along with it. That is what
+# the external dead-man's switch is for (step 3 of Next), and nothing here replaces it.
+#
+# Everything below is best-effort. **A hub that works must not fail to install because the agent
+# did not.** Every failure here is a note and a sentence about what to do, never an exit.
+watch_self() {
+    if (( SKIP_SELF )); then
+        note "Not watching this server, because --skip-self was given."
+        return 0
+    fi
+
+    step "Watching this server too"
+
+    if [[ -f /etc/redkite/agent.conf ]]; then
+        note "The agent is already on this server, so it has been left exactly as it is."
+        return 0
+    fi
+
+    if [[ -z "$TOKEN_OUT" ]]; then
+        note "This hub already had an account, so there is no fresh token here to add a machine"
+        note "with. Add this server from the Add a machine screen instead."
+        return 0
+    fi
+
+    local api="https://$HOSTNAME_IN"
+
+    # ---- can this server reach its own hub at all? -------------------------------------------
+    #
+    # Not a formality. A hub behind a domestic router, reached by a name pointing at the WAN
+    # address, often cannot reach itself by that name - the router will not turn the packet round.
+    # Better to find that out here, in one sentence, than to install an agent that never reports.
+    if ! curl -sS --max-time 10 -o /dev/null "$api/health" 2>/dev/null; then
+        # The ordinary cause on an IP-address hub: Caddy signed its own certificate and nothing on
+        # this machine has been told to believe it. We have the root right here, so fix it.
+        if docker exec redkite-caddy cat /data/caddy/pki/authorities/local/root.crt \
+             > /tmp/rk-root.crt 2>/dev/null && [[ -s /tmp/rk-root.crt ]]; then
+            install -m 0644 /tmp/rk-root.crt /usr/local/share/ca-certificates/redkite-hub-local.crt 2>/dev/null
+            update-ca-certificates >/dev/null 2>&1
+            rm -f /tmp/rk-root.crt
+            ok "told this server to trust the hub's own certificate"
+        fi
+    fi
+
+    if ! curl -sS --max-time 10 -o /dev/null "$api/health" 2>/dev/null; then
+        note "This server cannot reach its own hub at $api, so it has not been added."
+        note "That is usually a router that will not turn a packet round to itself. The hub is"
+        note "fine and everything else works; add this server from the Add a machine screen."
+        return 0
+    fi
+
+    # ---- smartmontools, because the agent is about to want it --------------------------------
+    #
+    # Installed here rather than by the agent's own installer, which deliberately does not put
+    # packages on other people's machines. This one is ours, and we are already installing Docker
+    # on it. Without it a disk on its way out looks exactly like a healthy one.
+    if command -v smartctl >/dev/null 2>&1; then
+        ok "smartmontools already here"
+    else
+        if command -v apt-get >/dev/null 2>&1; then
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq smartmontools >/dev/null 2>&1
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q smartmontools >/dev/null 2>&1
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y -q smartmontools >/dev/null 2>&1
+        elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive --quiet install smartmontools >/dev/null 2>&1
+        fi
+
+        if command -v smartctl >/dev/null 2>&1; then
+            ok "smartmontools installed, so disk health can be read"
+        else
+            note "Could not install smartmontools. The disks will read as 'cannot see' until it is"
+            note "there - which is honest, and is not the same as them being well."
+        fi
+    fi
+
+    # ---- add this server as a machine --------------------------------------------------------
+    local customer machine_token response name
+    name="$(hostname 2>/dev/null || echo "$HOSTNAME_IN")"
+
+    customer="$(curl -sS --max-time 15 "$api/api/v1/customers" \
+        -H "Authorization: Bearer $TOKEN_OUT" 2>/dev/null \
+        | grep -oE '"id"[[:space:]]*:[[:space:]]*"[0-9a-fA-F-]{36}"' | head -1 \
+        | grep -oE '[0-9a-fA-F-]{36}')"
+
+    if [[ -z "$customer" ]]; then
+        note "Could not read the customer back from the hub, so this server was not added."
+        note "Add it from the Add a machine screen; everything else is running."
+        return 0
+    fi
+
+    response="$(curl -sS --max-time 20 -X POST "$api/api/v1/machines" \
+        -H "Authorization: Bearer $TOKEN_OUT" \
+        -H 'Content-Type: application/json' \
+        -d "{\"customerId\":\"$customer\",\"name\":\"$name\",\"kind\":\"Server\",\"notes\":\"The hub itself. Added when the hub was installed.\"}" 2>/dev/null)"
+
+    machine_token="$(printf '%s' "$response" | grep -oE 'rk_live_[A-Za-z0-9_-]+' | head -1)"
+
+    if [[ -z "$machine_token" ]]; then
+        note "The hub would not issue a token for this server, so it was not added:"
+        printf '%s\n' "$response" | head -c 300 | sed 's/^/         /'
+        note "Everything else is running. Add it from the Add a machine screen."
+        return 0
+    fi
+
+    ok "added as \"$name\""
+
+    # ---- and install the agent on it ---------------------------------------------------------
+    #
+    # Fetched from this hub, which is the copy that matches it. The token goes in as a parameter
+    # and is never written anywhere but the agent's own config, which is root-only.
+    local agent="/tmp/rk-agent-install.$$.sh"
+
+    if ! curl -sSL --max-time 60 "$api/install.sh" -o "$agent" 2>/dev/null || [[ ! -s "$agent" ]]; then
+        rm -f "$agent"
+        note "Could not fetch the agent from $api/install.sh, so this server has a machine record"
+        note "with nothing reporting to it. Install the agent from the Add a machine screen."
+        return 0
+    fi
+
+    if bash "$agent" --hub "$api" --token "$machine_token" > /tmp/rk-agent.log 2>&1; then
+        ok "the agent is installed and has sent its first check-in"
+    else
+        note "The agent did not install cleanly. The last few lines were:"
+        tail -6 /tmp/rk-agent.log 2>/dev/null | sed 's/^/         /'
+        note "The machine record exists; install the agent by hand when you have a moment."
+    fi
+
+    rm -f "$agent" /tmp/rk-agent.log
+}
+
 seed() {
     step "Creating your account"
 
@@ -816,6 +965,25 @@ uninstall() {
     confirm "Stop and remove the Red Kite containers?" || exit 0
 
     ( cd "$DIR" && docker compose down ) || die "docker compose down did not work."
+
+    # If this installer put the agent on this server, this installer takes it off again. Leaving a
+    # timer behind that fires every five minutes at a hub which is no longer there would be a
+    # strange thing to call "removed" - and its log would fill up saying so.
+    if [[ -f /etc/redkite/agent.conf ]]; then
+        say ""
+        if confirm "Also remove the agent watching this server?"; then
+            systemctl disable --now redkite-agent.timer redkite-probe.timer >/dev/null 2>&1
+            rm -f /etc/systemd/system/redkite-agent.{timer,service} \
+                  /etc/systemd/system/redkite-probe.{timer,service}
+            systemctl daemon-reload >/dev/null 2>&1
+            rm -rf /etc/redkite /var/log/redkite /var/lib/redkite-probe
+            rm -f /usr/local/bin/redkite-agent.sh /usr/local/bin/redkite-probe
+            userdel redkite >/dev/null 2>&1
+            ok "the agent is gone from this server"
+            note "Its machine record is still on the hub. Revoke that machine's token there if"
+            note "the hub is going back up without this server on it."
+        fi
+    fi
 
     say ""
     say "Done. The files are still in $DIR and the database volume is untouched."
@@ -855,6 +1023,7 @@ check_dns
 install_files
 start_hub
 seed
+watch_self
 
 say ""
 say "================================================================"
@@ -925,8 +1094,14 @@ else
 fi
 
 say ""
-say "    2. Add a machine. The hub gives you the command to run on it,"
-say "       for Linux, Windows or Unraid, and a guide you can print."
+if [[ -f /etc/redkite/agent.conf ]]; then
+    say "    2. This server is already on it, watching itself. Add the next"
+    say "       machine from Add a machine - Linux, Windows or Unraid, each"
+    say "       with a guide you can print."
+else
+    say "    2. Add a machine. The hub gives you the command to run on it,"
+    say "       for Linux, Windows or Unraid, and a guide you can print."
+fi
 say ""
 say "    3. Set HEALTHCHECKS_PING_URL in $DIR/.env - something outside"
 say "       needs to watch the hub, because a monitor cannot report its"
