@@ -7,6 +7,10 @@
 # and compared with the hub.sh line below. This copy lives on GitHub, which is NOT the machine
 # that serves redkite.info - so somebody who gets into that machine cannot change both.
 #
+# The guide saves the installer as rk-hub.sh, and it is listed here under the name it is published
+# under, hub.sh. So compare the two lines by eye - "sha256sum -c" against this file will say FAILED
+# on a name it cannot find, which looks far more alarming than it is.
+#
 # The installer carries the other two checksums inside itself and refuses a file that does not
 # match, which catches a stale CDN copy or a partial compromise. It cannot catch a replaced
 # installer. That is what the line above is for.
