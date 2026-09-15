@@ -87,6 +87,28 @@
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+
+		# ------------------------------------------------------------------------------------
+		# Content-Security-Policy.
+		#
+		# This host had every other security header and not this one. It is the header that
+		# matters most here, because this is where a signed-in engineer reads customer machine
+		# names — and `script-src 'self'` is the load-bearing line: the built app is a module
+		# with a src, so there is no inline script to bless and an injected one cannot run.
+		# `frame-ancestors 'none'` says what X-Frame-Options above says, for browsers that read
+		# the newer spelling; `form-action 'self'` stops a submitted form being aimed elsewhere.
+		#
+		# **'unsafe-inline' covers styles only, and deliberately.** React sets this app's inline
+		# style props through element.style, which CSP does not police, but the toolchain can
+		# still emit a <style> block and a stylesheet that fails to load is a hub that looks
+		# broken. Styles are a far smaller prize than scripts; scripts get no such exception.
+		#
+		# The two Google font hosts are the one third party left, and they should not be: the
+		# public site already self-hosts its typefaces for the reason written at the top of its
+		# own fonts.css. The hub needs two weights that font set does not yet carry, so this is
+		# written down as the next thing rather than quietly blessed.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
 		# Do not advertise what is running here. It saves nobody anything to tell a scanner.
 		-Server
 	}
@@ -152,7 +174,18 @@
 
 	# What a person sees when the hub itself is down. Plain English, and it says what to do
 	# the same rule the interface follows.
+	#
+	# **A 413 is not an outage, and used to be told as one.** An over-large body trips the
+	# request_body caps above and got the sentence below — "the hub is not answering", on a hub
+	# that was answering perfectly well and had just refused the body on purpose. That is the
+	# failure this product refuses to ship on its screens: a condition reported as something it
+	# is not. Found by posting 60KB at the check-in endpoint of a real install.
 	handle_errors {
+		@toobig expression {err.status_code} == 413
+		handle @toobig {
+			respond "That was too big for the hub to accept, so it was refused rather than stored. The check-in endpoint takes 32KB and the management interface 2MB. Nothing is wrong with the hub and nothing has been lost. (413)" 413
+		}
+
 		respond "The Red Kite hub is not answering. Nothing has been lost: agents keep sending, and check-ins resume as soon as it is back. If this persists, the hub needs looking at on the server. ({err.status_code})" {err.status_code}
 	}
 }

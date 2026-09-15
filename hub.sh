@@ -116,7 +116,7 @@ readonly DEFAULT_DIR="/opt/redkite"
 # **If you change either file in site/hub/, these must change with it.** InstallerSealTests fails
 # the build otherwise, which is the only reason that is safe to say.
 readonly EXPECTED_COMPOSE_SHA256="8cd848d6348d5daee301af35cfb68c032b3274f59969c51fac03c738d7a9d1e6"
-readonly EXPECTED_CADDYFILE_SHA256="ad8b22473e7f8817fc6623e80e203b1b9b9e27d4401037a814a11ff9fce68ef3"
+readonly EXPECTED_CADDYFILE_SHA256="499fe64c7a89f941af26475c86b278614831dd5c1b8c148aaaaadb78b4be9f4d"
 
 DIR="$DEFAULT_DIR"
 HOSTNAME_IN=""
@@ -416,8 +416,9 @@ gather() {
     step "What this hub should be"
 
     if [[ -z "$HOSTNAME_IN" ]]; then
-        say "   The hub needs a name of its own that points at this server - something like"
-        say "   hub.yourbusiness.co.uk. Add the DNS record first if you have not yet."
+        say "   The address machines will use to reach this hub. A name that points at this server"
+        say "   - something like hub.yourbusiness.co.uk - is recommended. This server's IP address"
+        say "   also works; the only difference is the certificate."
         say ""
         say_the_address
         say ""
@@ -429,51 +430,50 @@ gather() {
     HOSTNAME_IN="${HOSTNAME_IN%%/*}"
 
     # -----------------------------------------------------------------------------------------
-    # An IP address, which is the obvious thing to try and does not work.
+    # An IP address: a working hub, with a certificate nothing trusts yet.
     #
     # **No public certificate authority will certify a bare IP address.** Caddy knows this, so
-    # instead of asking Let's Encrypt it quietly issues its own - a certificate signed by "Caddy
-    # Local Authority", which nothing on earth trusts. That is worse than an error, because the
-    # screens still load once a browser warning is clicked through, so the hub looks installed.
+    # instead of asking Let's Encrypt it issues its own - signed by "Caddy Local Authority", which
+    # nothing trusts until it is told to. The screens load past a browser warning.
     #
-    # The agent is where it actually bites. It verifies certificates properly and has no option
-    # to skip that, so every check-in fails and the machine never reports. Somebody would install
-    # the hub, install an agent, and watch a machine that never turns green, with nothing
-    # anywhere saying why.
+    # The agent is where it bites. It verifies certificates properly and has no option to skip
+    # that, so a machine cannot check in until it trusts this hub's root. That is one step per
+    # machine, and it works: this installer does it for the hub's own server further down, and
+    # the Linux agent's setup stops and prints the two commands rather than failing quietly.
     #
-    # So it is named here, before any of it happens.
+    # **This used to call an IP address "screens only" and tell people not to install an agent**,
+    # four screens before this same script installed one against it. Both were wrong: the hub
+    # works on an address, and the trade is the certificate, not the function. So the trade is
+    # named here, plainly, and the choice is left with the person making it.
     # -----------------------------------------------------------------------------------------
     if [[ "$HOSTNAME_IN" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
         IP_MODE=1
         say ""
-        fail "$HOSTNAME_IN is an IP address, so this hub's certificate will not be trusted."
+        note "$HOSTNAME_IN is an IP address. The hub works on it; its certificate is the catch."
         say ""
         say "   No certificate authority will issue a certificate for a bare IP address, so Caddy"
-        say "   signs its own instead. Browsers show a warning you can click through. Agents"
-        say "   cannot click through anything: they verify properly and have no option to skip"
-        say "   it, so a machine will not check in until it has been told to trust this hub."
+        say "   signs its own instead. Browsers show a warning you click through once. Agents"
+        say "   verify properly and cannot click through anything, so each machine you watch has"
+        say "   to be told to trust this hub before it can check in."
         say ""
-        say "   That is one command per monitored machine, and it does work - but it is a thing"
-        say "   you must remember on every machine for ever, which is why a real name is better."
+        if (( ! SKIP_SELF )); then
+            say "   This server is done for you, and it will be the first machine the hub watches."
+        fi
+        say "   Every other Linux machine needs two commands, printed at the end of this install"
+        say "   and again by the agent's own setup if they are missed."
         say ""
-        say "   You need a name. Any of these works and none costs anything:"
+        say "   A name avoids all of that, and costs nothing:"
         say ""
         say "     - A subdomain of a domain you already own, pointed at this server."
-        say "       hub.yourbusiness.co.uk is the usual answer and takes two minutes."
+        say "     - A free name from DuckDNS (duckdns.org), built for exactly this."
         say ""
-        say "     - A free name from DuckDNS (duckdns.org), which is built for exactly this."
-        say "       You get something like yourname.duckdns.org pointed at this server."
+        say "   Moving to a name later keeps the database, settings and account, but every machine"
+        say "   already watching this hub has to be pointed at the new name - so it is easiest to"
+        say "   decide before you add many."
         say ""
-        say "   Names like <ip>.nip.io resolve correctly but are a poor idea here: every user of"
-        say "   nip.io in the world shares one Let's Encrypt rate limit, so the certificate often"
-        say "   simply will not issue. DuckDNS does not have that problem."
-        say ""
-        say "   Carrying on is fine if you only want to look at the screens. The hub will run and"
-        say "   you can sign in past a browser warning - but do not install an agent against it."
-        say ""
-        confirm "Carry on with $HOSTNAME_IN, screens only?" \
-            || die "Point a name at this server, then run this again."
-        note "Carrying on. Agents will not work against this hub."
+        confirm "Carry on with $HOSTNAME_IN?" \
+            || die "Point a name at this server, then run this again with it."
+        ok "carrying on with an IP address"
     else
         [[ "$HOSTNAME_IN" == *.* ]] \
             || die "That does not look like a full name. It needs to be one the internet can resolve, like hub.yourbusiness.co.uk"
@@ -789,6 +789,32 @@ start_hub() {
         exit 1
     fi
 
+    # ------------------------------------------------------------------------------------------
+    # Make Caddy read the Caddyfile we just wrote.
+    #
+    # **`docker compose up -d` does not do this, and that is the whole reason this block exists.**
+    # Compose only recreates a container whose *service definition* changed, and the Caddyfile is
+    # bind-mounted rather than baked in — so on a re-run the new file lands on disk, the container
+    # is left alone, and Caddy carries on serving the config it read when it started. The installer
+    # meanwhile prints "ok Caddyfile" and "the hub is running and answering", both true, and the
+    # change is simply not in effect.
+    #
+    # That matters because re-running this installer is how a customer picks up a *security* fix to
+    # the Caddyfile. Telling somebody a hardening change has been applied when it has not is worse
+    # than not offering it: they stop looking. Caught on a real re-install, where a new
+    # Content-Security-Policy sat on disk for five minutes while the old config kept serving.
+    #
+    # A reload is graceful — Caddy swaps config without dropping a connection, so the check-in
+    # endpoint does not blink. If it fails, the file is bad in a way `validate` did not catch, and
+    # a restart is the honest fallback rather than leaving it half-applied.
+    if docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+        ok "Caddy is using the Caddyfile this installer wrote"
+    else
+        docker compose restart caddy >/dev/null 2>&1 \
+            && ok "Caddy restarted to pick up its configuration" \
+            || note "Caddy may still be running an older configuration. Check: cd $DIR && docker compose restart caddy"
+    fi
+
     printf '   waiting for the hub to answer'
     local state=""
     for _ in $(seq 1 60); do
@@ -1078,14 +1104,20 @@ if (( IP_MODE )); then
     say "          /usr/local/share/ca-certificates/redkite-hub-local.crt"
     say "        sudo update-ca-certificates"
     say ""
-    say "      That is proved to work. It is also one more thing to"
-    say "      remember on every machine for ever, which is the real"
-    say "      argument for giving the hub a name instead."
+    if [[ -f /etc/redkite/agent.conf ]]; then
+        say "      That is proved to work. This server has had it done"
+        say "      already. It is one more step on every other machine,"
+        say "      which is the argument for giving the hub a name."
+    else
+        say "      That is proved to work. It is one more step on every"
+        say "      machine, which is the argument for giving the hub a name."
+    fi
     say ""
-    say "  To make it real, point a name at this server - a subdomain of"
-    say "  your own domain, or a free one from duckdns.org - and run this"
-    say "  again with it. Nothing here is wasted: the database, the"
-    say "  settings and your account all stay exactly as they are."
+    say "  To move to a name later, point it at this server and run this"
+    say "  again with it. The database, settings and account all stay."
+    say "  Every machine already watching must then be pointed at the new"
+    say "  name - on Linux, HUB_URL in /etc/redkite/agent.conf, this"
+    say "  server included."
     say ""
 fi
 

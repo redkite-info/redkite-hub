@@ -31,7 +31,7 @@ A £5-a-month VPS anywhere else is the whole requirement. It needs very little:
 | Server | 1 vCPU, 1GB RAM, 20GB disk. The smallest tier at any host is enough |
 | Operating system | Anything that runs Docker. Ubuntu LTS is the easy answer |
 | Software | Docker and the Compose plugin |
-| A name | A hostname you control, pointed at the server — `hub.yourbusiness.co.uk` |
+| An address | A hostname you control, pointed at the server — `hub.yourbusiness.co.uk` — is recommended. The server's IP address also works; see step 1 for the one difference |
 | A mailbox | For certificate notices, and later for alerts |
 
 You will also need **port 80 and port 443 open inbound**. Port 80 is not optional even though
@@ -52,6 +52,21 @@ This matters more than it looks. Caddy asks Let's Encrypt for a certificate the 
 and Let's Encrypt proves you own the name by connecting back to it. If the record is not there yet,
 the challenge fails, Caddy retries with a growing backoff, and the hub serves nothing at all. **It
 reads like a broken deployment rather than a missing DNS record**, and people lose an evening to it.
+
+**Using the server's IP address instead** skips this step, and set `HUB_HOSTNAME` to the address in
+step 3. Everything works the same except the certificate: nobody issues a public certificate for an
+IP address, so Caddy signs its own. Browsers warn once, and each machine you watch must trust the
+hub's root before its agent will check in. On Debian or Ubuntu:
+
+```bash
+# on the hub
+docker exec redkite-caddy cat /data/caddy/pki/authorities/local/root.crt > root.crt
+# on each Linux machine, with that file copied over
+sudo cp root.crt /usr/local/share/ca-certificates/redkite-hub-local.crt && sudo update-ca-certificates
+```
+
+Only the Linux agent has been proved against a hub on an IP address. Moving to a name later keeps
+the data, but every agent must then be pointed at the new name.
 
 ---
 
