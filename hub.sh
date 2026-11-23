@@ -115,8 +115,8 @@ readonly DEFAULT_DIR="/opt/redkite"
 #
 # **If you change either file in site/hub/, these must change with it.** InstallerSealTests fails
 # the build otherwise, which is the only reason that is safe to say.
-readonly EXPECTED_COMPOSE_SHA256="8cd848d6348d5daee301af35cfb68c032b3274f59969c51fac03c738d7a9d1e6"
-readonly EXPECTED_CADDYFILE_SHA256="499fe64c7a89f941af26475c86b278614831dd5c1b8c148aaaaadb78b4be9f4d"
+readonly EXPECTED_COMPOSE_SHA256="3f9d6d23e70caf19ec64598bd1a6c306d657c21f5c95031652889c6b5a1a7632"
+readonly EXPECTED_CADDYFILE_SHA256="45541e96299523dd6d76b84fdd4d067703ea66bc61e57f44643e083131ed0c0e"
 
 DIR="$DEFAULT_DIR"
 HOSTNAME_IN=""

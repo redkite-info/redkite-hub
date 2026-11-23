@@ -67,11 +67,19 @@
 	# size: a monitoring hub with eighty agents checking in every five minutes writes a lot of
 	# lines, and a full disk on the machine that is supposed to notice things is the worst
 	# possible failure.
+	#
+	# **Kept for about three weeks, and readable by the hub.** Almost every line is the hub screen
+	# polling itself, so ten files reached back barely two days - too short to look into anything
+	# reported later, which the first intrusion review (23 November 2026) found. A hundred rolled
+	# files is about 35MB compressed. `mode 0644` because the hub's Security tab reads these
+	# through a read-only mount of the volume (caddy_logs:/host/caddy-logs:ro); Caddy otherwise
+	# writes them for root alone. Nothing but the two containers mounts the volume.
 	log {
 		output file /var/log/caddy/hub-access.log {
 			roll_size 10MiB
-			roll_keep 10
+			roll_keep 100
 			roll_keep_for 720h
+			mode 0644
 		}
 		format json
 	}

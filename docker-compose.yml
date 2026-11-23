@@ -98,6 +98,17 @@ services:
       # `rslave` so later mounts on the host are seen and nothing can propagate back the other way.
       - /:/host/root:ro,rslave
 
+      # Caddy's access logs, read-only, for the Security tab (SecurityWatch). Caddy writes them with
+      # mode 0644 for this reason; nothing but these two containers mounts the volume.
+      - caddy_logs:/host/caddy-logs:ro
+
+    # The adm group (gid 4 on Debian and Ubuntu), so the hub can read the server's auth.log through
+    # the read-only root mount above and say who has signed in over SSH and who has tried. Read
+    # access to the logs adm can read, nothing else; on a server where gid 4 is not adm the
+    # Security tab says it cannot read the log rather than guessing.
+    group_add:
+      - "4"
+
     expose:
       # Visible to Caddy on the compose network and to nothing else. There is no `ports:` here on
       # purpose: the hub is never reachable except through Caddy, which holds the TLS.
