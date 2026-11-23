@@ -666,6 +666,32 @@ install_files() {
 
 write_env() {
     local pw="$1"
+
+    # **A re-run keeps every setting it was not asked about.** Re-running this installer is how a
+    # hub picks up a fix, and until 23 November 2026 a re-run wrote every optional setting back as
+    # blank - alerting credentials, the Healthchecks.io address, a pinned version - while the
+    # comment above install_files promised they were kept. A hub updated that way stopped sending
+    # alerts and said so only on its own health screen. The old file is read first; anything in
+    # it the template below does not name is carried over at the end rather than dropped.
+    local -A was=()
+    local k v
+    if [[ -f "$DIR/.env" ]]; then
+        while IFS='=' read -r k v; do
+            [[ "$k" =~ ^[A-Z_][A-Z0-9_]*$ ]] && was["$k"]="$v"
+        done < <(grep -E '^[A-Z_][A-Z0-9_]*=' "$DIR/.env")
+    fi
+    keep() { printf '%s' "${was[$1]-}"; }
+
+    local -a named=(HUB_HOSTNAME ADMIN_EMAIL ACME_EMAIL ORGANISATION_NAME POSTGRES_PASSWORD
+        REDKITE_VERSION HEALTHCHECKS_PING_URL EMAIL_PROVIDER ALERT_FROM_ADDRESS EMAIL_API_KEY
+        SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN
+        TWILIO_FROM_NUMBER PUSHOVER_APPLICATION_TOKEN)
+    local extra="" n
+    for k in "${!was[@]}"; do
+        for n in "${named[@]}"; do [[ "$k" == "$n" ]] && continue 2; done
+        extra+="$k=${was[$k]}"$'\n'
+    done
+
     cat > "$DIR/.env" <<EOF
 # Written by the Red Kite installer. Safe to edit; run docker compose up -d afterwards.
 #
@@ -679,27 +705,31 @@ POSTGRES_PASSWORD=$pw
 
 # Which version to run. Blank means latest, which is right while you are trying it. Pin one once
 # the hub is watching anything you care about, so an update is something you choose.
-REDKITE_VERSION=
+REDKITE_VERSION=$(keep REDKITE_VERSION)
 
 # Who watches the watcher. The hub pings this on a timer, and withholds the ping when its own
 # sweep is not really running - so the outside service notices a hub that is up but not working,
 # not just one that has stopped. Healthchecks.io's free tier is enough.
-HEALTHCHECKS_PING_URL=
+HEALTHCHECKS_PING_URL=$(keep HEALTHCHECKS_PING_URL)
 
 # Alerting. All optional, and the hub says on its own health screen when it cannot send rather
 # than failing quietly. Add a channel once you have seen a machine check in.
-EMAIL_PROVIDER=
-ALERT_FROM_ADDRESS=
-EMAIL_API_KEY=
-SMTP_HOST=
-SMTP_PORT=
-SMTP_USERNAME=
-SMTP_PASSWORD=
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_FROM_NUMBER=
-PUSHOVER_APPLICATION_TOKEN=
+EMAIL_PROVIDER=$(keep EMAIL_PROVIDER)
+ALERT_FROM_ADDRESS=$(keep ALERT_FROM_ADDRESS)
+EMAIL_API_KEY=$(keep EMAIL_API_KEY)
+SMTP_HOST=$(keep SMTP_HOST)
+SMTP_PORT=$(keep SMTP_PORT)
+SMTP_USERNAME=$(keep SMTP_USERNAME)
+SMTP_PASSWORD=$(keep SMTP_PASSWORD)
+TWILIO_ACCOUNT_SID=$(keep TWILIO_ACCOUNT_SID)
+TWILIO_AUTH_TOKEN=$(keep TWILIO_AUTH_TOKEN)
+TWILIO_FROM_NUMBER=$(keep TWILIO_FROM_NUMBER)
+PUSHOVER_APPLICATION_TOKEN=$(keep PUSHOVER_APPLICATION_TOKEN)
 EOF
+
+    if [[ -n "$extra" ]]; then
+        printf '\n# Kept from the previous .env when the installer was run again.\n%s' "$extra" >> "$DIR/.env"
+    fi
 }
 
 # ---------------------------------------------------------------------------------------------
